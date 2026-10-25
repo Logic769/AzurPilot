@@ -31,6 +31,8 @@ class AnnouncementService:
         self._lock = threading.Lock()
         self._cached: Optional[Dict[str, Any]] = None
         self._last_fetch: float = 0.0
+        self._etag = ''
+        self._initialized = False
 
     def get(self, force: bool = False) -> Optional[Dict[str, Any]]:
         """获取当前最新公告。
@@ -43,17 +45,17 @@ class AnnouncementService:
         """
         now = time.time()
         with self._lock:
-            if not force and self._cached is not None and (now - self._last_fetch < self._ttl):
+            if not force and self._initialized and (now - self._last_fetch < self._ttl):
                 return self._cached
 
-            cached_id = self._cached.get('announcementId') if self._cached else None
             try:
-                # ApiClient.get_announcement 支持传入 current_id 进行增量检查
-                data = ApiClient.get_announcement(timeout=5, current_id=cached_id)
+                result = ApiClient.fetch_announcement(timeout=5, etag=self._etag)
                 self._last_fetch = now
-                if data is not None:
-                    self._cached = data
-                # 若返回 None 且之前有缓存，则保留已有缓存（如 304 Not Modified）
+                if not result.not_modified:
+                    notice = result.document['announcement']
+                    self._cached = ApiClient.announcement_for_ui(notice) if notice is not None else None
+                    self._etag = result.etag
+                    self._initialized = True
             except Exception as e:
                 logger.warning(f'[API] 拉取公告失败: {e}')
                 self._last_fetch = now

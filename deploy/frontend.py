@@ -8,10 +8,11 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+from deploy.http_headers import browser_headers
+
 # 安卓运行包永不本地编译前端：源码变更后由宿主从其 CI 发布渠道拉取按提交发布的
 # 预构建 dist（frontend-<commit>.tar.xz + .sha256）。基址由宿主注入（含镜像前缀）。
 ANDROID_DIST_BASE_ENV = 'AZURPILOT_ANDROID_DIST_BASE'
-_ANDROID_UA = 'Mozilla/5.0 (X11; Linux x86_64) AzurPilot-Android-Frontend'
 
 
 def android_dist_base():
@@ -42,7 +43,7 @@ def android_manifest(root=None):
 def android_dist_ready(commit, root=None):
     """探测宿主渠道是否已发布该提交的预构建 dist（更新前置条件）。
 
-    只做 HEAD 探测不下载；探测失败（断网/未发布/未注入基址）一律返回 False，
+    GET 读取小型校验文件；探测失败（断网/未发布/未注入基址）一律返回 False，
     让更新检查把该提交视作"暂不可更新"，从源头规避源码与 dist 失配启动崩溃。
 
     Args:
@@ -59,19 +60,24 @@ def android_dist_ready(commit, root=None):
         return False
     url = f'{base}/frontend-{commit}.tar.xz.sha256'
     try:
-        request = urllib.request.Request(url, method='HEAD', headers={'User-Agent': _ANDROID_UA})
+        request = urllib.request.Request(url, method='GET', headers=browser_headers(binary=True))
         with urllib.request.urlopen(request, timeout=10) as response:
-            return response.status == 200
-    except OSError:
+            checksum = response.read(256).decode('ascii', 'strict').strip().split()
+            return response.status == 200 and bool(checksum) and len(checksum[0]) == 64 \
+                and all(char in '0123456789abcdefABCDEF' for char in checksum[0])
+    except (OSError, UnicodeError):
         return False
 
 
 def _android_download(url, target, timeout=300):
     """下载文件到 target 并返回字节数；网络错误统一转 RuntimeError。"""
-    request = urllib.request.Request(url, headers={'User-Agent': _ANDROID_UA})
+    request = urllib.request.Request(url, headers=browser_headers(binary=True))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response, open(target, 'wb') as f:
             shutil.copyfileobj(response, f)
+            expected = response.headers.get('Content-Length')
+            if expected is not None and f.tell() != int(expected):
+                raise RuntimeError('预构建前端下载长度不完整')
     except OSError as exc:
         raise RuntimeError(f'下载失败: {url} ({exc})') from exc
     return target.stat().st_size
@@ -102,7 +108,7 @@ def _android_fetch_dist(directory, root):
         size = _android_download(f'{base}/{stem}.tar.xz', tar_path)
         logger.info(f'预构建前端下载完成: {size} bytes')
         request = urllib.request.Request(
-            f'{base}/{stem}.tar.xz.sha256', headers={'User-Agent': _ANDROID_UA})
+            f'{base}/{stem}.tar.xz.sha256', headers=browser_headers(binary=True))
         with urllib.request.urlopen(request, timeout=30) as response:
             expected = response.read().decode('ascii', 'replace').strip().split()[0]
         digest = hashlib.sha256(tar_path.read_bytes()).hexdigest()

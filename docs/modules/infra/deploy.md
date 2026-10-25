@@ -20,6 +20,7 @@
 - `adb.py` / `emulator.py`：adb 分发与自动连接；VirtualBox 系模拟器注册表扫描与端口发现。
 - `frontend.py`：按源码内容摘要决定是否重建 `frontend/dist`。
 - `atomic.py`：安装失败的原子清理（临时文件识别与回滚）。
+- `device_id.py`、`http_headers.py`、`http.py`：部署与运行期共用匿名身份及浏览器请求头；云 v2 契约和服务器端发布入口见[自建云 API](cloud-api-v2.md)。
 - `patch.py`：安装前环境修补（运行目录检查、uiautomator2/apkutils2 补丁、证书链）。
 - `launcher/Alas.bat`（打包为 `AzurPilot.exe`）：用户双击入口——跑安装器，成功后用 `pythonw` 拉起 `gui.py`。
 
@@ -94,7 +95,7 @@ Alas.bat → python -m deploy.installer
 成功 → start pythonw gui.py --electron
 ```
 
-`GitManager.git_install()` 按本地配置直接执行 Git/CDN 更新，不再请求云端更新总开关。云端仅保留运行期间的强制更新开关，其访问失败不阻止正常版本检查。
+`GitManager.git_install()` 按本地配置直接执行 Git/CDN 更新，不再请求云端更新总开关。运行期间从 Cloudflare 静态 `GET /api/v2/get/update/data.json` 读取强更策略，ETag 条件请求不添加时间戳；访问失败或非布尔策略返回 `None`，不阻止正常版本检查。
 
 ### 启动后的依赖自举
 
@@ -106,6 +107,8 @@ Alas.bat → python -m deploy.installer
 `gui.py` 不直接信任 `.venv`：启动时用 `deploy/uv.py` 的 `dependency_sync_service` 做带超时与重试的依赖同步（pending 状态记录在 `module/runtime/setting.py`，崩溃后下次启动重做）。WebUI 服务有 120 秒就绪超时与最多 3 次重启；运行期检测到依赖标记时同样先同步再拉服务。
 
 ### 前端构建判据
+
+安卓预构建包与校验文件使用统一二进制请求头，存在性探测通过 GET 读取小型 SHA-256 文件；下载继续校验长度、归档和哈希，公有云地址与提交选择不变。
 
 `ensure_frontend` 对 `package.json`、`vite.config.ts`、`src/**`、`public/**` 做内容哈希（不依赖 git 检出时间），摘要变化才重建。这就是「改前端源码后不重启构建，界面不更新」的原因。
 
@@ -126,7 +129,7 @@ Alas.bat → python -m deploy.installer
 ## 16. 修改注意事项
 
 - **`PipManager` 名字是历史遗留**：它调用 `uv sync`，不要在其中加 pip 逻辑；依赖问题先查 `deploy/uv.py`。
-- **`deploy/Windows/` 是旧布局副本**，主流程已用顶层 `deploy/*.py`；改安装逻辑改顶层，勿两边都改。
+- **`deploy/Windows/` 是旧布局副本**，主流程已用顶层 `deploy/*.py`。仍支持的首次安装下载补丁共用 `download_patch.py`，两份入口必须保持一致，不能复制另一套请求头逻辑。
 - **前端产物摘要机制**：只改 `dist/` 不改源码会被下次启动重建覆盖；发布产物请走正常构建。
 - **随机 User-Agent、CDN 兜底是可用性关键**（国内网络），不要当可疑代码清理。
 - `Alas.bat` 转 `AzurPilot.exe` 由外部工具完成，仓库只维护 bat。

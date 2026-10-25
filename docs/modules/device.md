@@ -160,10 +160,10 @@ Input(Uiautomator2)
 | `scrcpy` | scrcpy 控制通道（代码保留，配置选项未暴露） |
 
 `PatchedIniter.push_url()` 为 atx-agent 预填 uiautomator2 的原有缓存，再沿用上游解包和 ADB 推送。
-下载时不发送固定的 GitHub `Origin`，避免 `atx.azurpilot.com` 重定向到 CNB 后被拒绝；连接/读取
+下载通过 `deploy/downloads.py` 使用[统一浏览器与匿名设备请求头](infra/cloud-api-v2.md)，不发送固定 Origin、Referer；重定向和镜像回退保持身份，避免 `atx.azurpilot.com` 重定向到 CNB 后被拒绝。连接/读取
 超时分别为 5/30 秒，镜像失败时回退到相同版本和架构的 OpenATX 官方 GitHub Release。
 已有缓存和新下载都检查归档内的完整 `atx-agent` 文件；下载先写临时文件，检查后原子替换缓存，
-失败时清除残片并继续抛出错误。其他资源的下载以及 ABI 选择、禁用 minicap 的补丁保持原有流程。
+失败时清除残片并继续抛出错误。uiautomator2 其他资源和官方 ADB 下载也使用统一请求头，ABI 选择、下载地址、推送及禁用 minicap 的补丁保持原有流程。
 离线验证见 `tests.test_atx_agent_download`；下载和模拟推送验证不能代替真实设备上的 agent 启动验收。
 
 uiautomator2 的测试辅助 APK `com.github.uiautomator.test` 未声明 `versionName`。

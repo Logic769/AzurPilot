@@ -17,7 +17,7 @@ class TestGitInstall(unittest.TestCase):
                 manager = Mock(spec=GitManager)
                 manager.GitOverCdn = use_cdn
                 manager.goc_client.update.return_value = cdn_success
-                with patch('deploy.git.requests.get') as request:
+                with patch('deploy.git.cloud_client.policy') as request:
                     GitManager.git_install(manager)
 
                 request.assert_not_called()
@@ -35,6 +35,13 @@ class TestGitInstall(unittest.TestCase):
                         proxy=manager.GitProxy,
                         ssl_verify=manager.SSLVerify,
                     )
+
+    def test_cloud_policy_failure_returns_none_and_valid_boolean_is_preserved(self):
+        for value in (True, False):
+            with patch('deploy.git.cloud_client.policy', return_value=value):
+                self.assertIs(GitManager.cloud_force_update_enabled(), value)
+        with patch('deploy.git.cloud_client.policy', side_effect=ValueError('无效静态文档')):
+            self.assertIsNone(GitManager.cloud_force_update_enabled())
 
 
 class TestUpdaterReload(unittest.TestCase):

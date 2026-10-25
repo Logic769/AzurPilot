@@ -9,6 +9,10 @@ from json import JSONDecodeError
 
 import requests
 
+from deploy.cloud_api import CloudEndpoints
+from deploy.cloud_contract import SERVER_PATH, server_document
+from deploy.http import BrowserSession
+
 from module.base.timer import Timer
 from module.config.server import VALID_SERVER_LIST as server_list
 from module.config.server import ServerInfo, get_server_info
@@ -16,7 +20,6 @@ from module.exception import ScriptError
 from module.logger import logger
 from module.server_status import ServerStatusQueryError, query_server
 
-SERVER_API_BASE = 'https://server-checker.nanoda.work'
 AVAILABLE_SERVER_STATES = {'normal', 'full', 'reg_full'}
 UNAVAILABLE_SERVER_STATES = {'maintenance', 'unopened', 'unknown'}
 
@@ -38,7 +41,7 @@ class ServerChecker:
         Args:
             server (str): 服务器标识名称（如 'disabled' 或具体服务器名称）。
         """
-        self._base = SERVER_API_BASE
+        self._base = CloudEndpoints.configured().server
         self._server_info: ServerInfo | None = None
         if server == 'disabled':
             self._server = 'disabled'
@@ -70,15 +73,16 @@ class ServerChecker:
 
         assert self._server_info is not None
         try:
-            session = requests.Session()
+            session = BrowserSession()
             session.trust_env = False
-            response = session.get(
-                url=(
-                    f'{self._base}/api/v1/servers/'
-                    f'{self._server_info.region}_{self._server_info.server_id}'
-                ),
-                timeout=15,
-            )
+            try:
+                response = session.get(
+                    url=self._base + SERVER_PATH,
+                    params={'region': self._server_info.region, 'server_id': self._server_info.server_id},
+                    timeout=15, allow_redirects=False,
+                )
+            finally:
+                session.close()
             if response.status_code == 200:
                 self._load_response(response.json())
             elif response.status_code == 404:
@@ -138,6 +142,10 @@ class ServerChecker:
             raise ScriptError('服务器检查 API 未返回服务器数据。')
 
         assert self._server_info is not None
+        try:
+            server_document(payload, self._server_info.region)
+        except ValueError as exc:
+            raise ScriptError(str(exc)) from exc
         server_id = server.get('id')
         name = server.get('name')
         status = server.get('status')

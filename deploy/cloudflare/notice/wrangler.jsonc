@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ap-notice",
+  "compatibility_date": "2026-10-26",
+  "preview_urls": true,
+  "routes": [
+    {"pattern": "api.example.com/api/v2/get/notice/*", "zone_name": "example.com"}
+  ],
+  "assets": {"directory": "./public", "html_handling": "none", "not_found_handling": "none"}
+}

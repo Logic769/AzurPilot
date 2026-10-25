@@ -5,14 +5,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import platform
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
-
-import requests
 
 from module.base.device_id import get_device_id
 from module.base.api_client import ApiClient
@@ -42,6 +39,8 @@ class Cl1DataSubmitter:
         self._device_id: Optional[str] = None
         self._last_submit_time: float = 0
         self._submit_interval: int = 600  # 10分钟
+        self._pending = None
+        self._submit_lock = threading.RLock()
         
         # 获取项目根目录
         self.project_root = Path(__file__).resolve().parents[2]
@@ -154,9 +153,10 @@ class Cl1DataSubmitter:
             'akashi_probability': akashi_probability,
             'average_stamina': average_stamina,
             'net_stamina_gain': net_stamina_gain,
+            'akashi_ap': akashi_ap,
         }
     
-    def submit_data(self, data: Dict[str, Any], timeout: int = 10) -> bool:
+    def submit_data(self, data: Dict[str, Any], timeout: int = 10):
         """提交数据到 API。
 
         Args:
@@ -164,11 +164,10 @@ class Cl1DataSubmitter:
             timeout (int): 请求超时时间（秒）。
 
         Returns:
-            bool: 是否提交成功。
+            Future | None: 后台提交任务；无战斗数据时不创建请求。
         """
         # 委托给ApiClient处理
-        ApiClient.submit_cl1_data(data, timeout=timeout)
-        return True
+        return ApiClient.submit_cl1_data(data, timeout=timeout)
     
     def should_submit(self) -> bool:
         """检查是否应该提交数据（基于时间间隔判断）。
@@ -177,7 +176,7 @@ class Cl1DataSubmitter:
             bool: 达到间隔时间则返回 True。
         """
         current_time = time.time()
-        if current_time - self._last_submit_time >= self._submit_interval:
+        if self._pending is None and current_time - self._last_submit_time >= self._submit_interval:
             return True
         return False
     
@@ -187,7 +186,7 @@ class Cl1DataSubmitter:
         检查时间间隔，避免频繁提交。
 
         Returns:
-            bool: 是否成功提交。
+            bool: 是否已加入后台队列；成功时间由服务端回执更新。
         """
         if not self.should_submit():
             return False
@@ -199,17 +198,32 @@ class Cl1DataSubmitter:
             # 计算指标
             metrics = self.calculate_metrics(raw_data)
 
-            # 提交数据
-            success = self.submit_data(metrics)
-
-            if success:
-                self._last_submit_time = time.time()
-
-            return success
+            with self._submit_lock:
+                if not self.should_submit():
+                    return False
+                pending = self.submit_data(metrics)
+                if pending is None:
+                    return False
+                self._pending = pending
+                pending.add_done_callback(self._submission_done)
+            return True
 
         except Exception as e:
             logger.exception(f'[侵蚀1统计] 自动提交数据失败: {e}')
             return False
+
+    def _submission_done(self, future):
+        """只在响应确认后更新节流时间，失败允许下一轮重新生成快照。"""
+        with self._submit_lock:
+            try:
+                result = future.result()
+                if result.get('accepted') is not True:
+                    raise ValueError('服务端未确认 CL1 快照')
+                self._last_submit_time = time.time()
+            except Exception as exc:
+                logger.warning(f'[侵蚀1统计] 月度快照提交失败：{exc}')
+            finally:
+                self._pending = None
 
     def auto_submit_daemon(self):
         """定时提交守护进程 (生成器函数，用于 task_handler)。

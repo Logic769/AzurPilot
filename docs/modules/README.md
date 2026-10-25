@@ -32,6 +32,7 @@
 | [infra/log-design-language.md](infra/log-design-language.md) | 日志设计语言规范（LDL）：数据模型、全项目语义词典与 WebUI 解析渲染标准 |
 | [infra/submodule-tools.md](infra/submodule-tools.md) | 外部桥接（MAA/FGO）与 dev_tools 工具集 |
 | [infra/deploy.md](infra/deploy.md) | 部署与启动链路：安装器、启动脚本、Docker、依赖自举 |
+| [infra/cloud-api-v2.md](infra/cloud-api-v2.md) | 自建云契约、统一请求头、公共静态 Worker 与 CL1 快照 |
 | [infra/testing.md](infra/testing.md) | 测试体系：Python 单测、前端单测与两套 e2e 的边界 |
 
 ### 战斗与地图

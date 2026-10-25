@@ -16,6 +16,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from deploy.http_headers import browser_headers
+
 import adbutils
 import uiautomator2 as u2
 from adbutils import AdbClient, AdbDevice
@@ -90,7 +92,12 @@ class ConnectionAttr:
         logger.warning(f'[设备] 未找到 ADB，正在下载 Android platform-tools: {url}')
         tools_dir.parent.mkdir(parents=True, exist_ok=True)
         try:
-            urllib.request.urlretrieve(url, archive)
+            request = urllib.request.Request(url, headers=browser_headers(binary=True))
+            with urllib.request.urlopen(request, timeout=60) as response, archive.open('wb') as output:
+                shutil.copyfileobj(response, output)
+                expected = response.headers.get('Content-Length')
+                if expected is not None and output.tell() != int(expected):
+                    raise ValueError('ADB 下载长度不完整')
         except Exception as e:
             archive.unlink(missing_ok=True)
             logger.warning(f'[设备] ADB 下载失败: {e}')

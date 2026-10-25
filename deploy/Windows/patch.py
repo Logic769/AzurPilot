@@ -2,6 +2,8 @@ import os
 import re
 import subprocess
 
+from deploy.download_patch import patch_u2_downloads
+
 from deploy.Windows.logger import logger
 from deploy.uv import venv_python
 
@@ -162,6 +164,10 @@ def patch_uiautomator2():
             logger.info(f'{init_file} appdir not found')
     else:
         logger.info('uiautomator2cache is not installed skip patching')
+
+    new_content = patch_u2_downloads(content)
+    modified = modified or new_content != content
+    content = new_content
 
     # 保存文件
     if modified:

@@ -1,6 +1,9 @@
 """ATX 下载回归测试：隔离网络、缓存目录和设备，不操作真实模拟器。"""
 
 import io
+import ast
+import logging
+import os
 import os
 import tarfile
 import tempfile
@@ -37,6 +40,7 @@ def response(content, status=200, content_length=True):
 
 class TestAtxAgentDownload(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch('deploy.http_headers.request_device_id', return_value='a' * 32))
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.object(u2.init, 'appdir', str(self.directory)))
         self.init = u2.init.Initer.__new__(u2.init.Initer)
@@ -63,7 +67,7 @@ class TestAtxAgentDownload(unittest.TestCase):
             # 复现 CNB 对下载器旧请求头的拒绝。
             return response(self.content, status=403 if 'origin' in headers else 200)
 
-        with patch('requests.get', side_effect=download) as get:
+        with patch('deploy.downloads.download_get', side_effect=download) as get:
             self.install_agent()
 
         get.assert_called_once()
@@ -74,7 +78,7 @@ class TestAtxAgentDownload(unittest.TestCase):
         self.assert_agent_pushed()
 
     def test_mirror_failure_falls_back_to_matching_official_release(self):
-        with patch('requests.get', side_effect=[response(b'Forbidden', 403), response(self.content)]) as get:
+        with patch('deploy.downloads.download_get', side_effect=[response(b'Forbidden', 403), response(self.content)]) as get:
             self.install_agent()
 
         self.assertEqual([item.args[0] for item in get.call_args_list], [
@@ -85,7 +89,7 @@ class TestAtxAgentDownload(unittest.TestCase):
         self.assert_agent_pushed()
 
     def test_read_timeout_also_uses_official_fallback(self):
-        with patch('requests.get', side_effect=[requests.ReadTimeout('下载超时'), response(self.content)]) as get:
+        with patch('deploy.downloads.download_get', side_effect=[requests.ReadTimeout('下载超时'), response(self.content)]) as get:
             self.install_agent()
 
         self.assertEqual(get.call_count, 2)
@@ -94,7 +98,7 @@ class TestAtxAgentDownload(unittest.TestCase):
     def test_valid_cache_is_reused_without_network(self):
         self.cache.parent.mkdir(parents=True)
         self.cache.write_bytes(self.content)
-        with patch('requests.get', side_effect=AssertionError('不应访问网络')) as get:
+        with patch('deploy.downloads.download_get', side_effect=AssertionError('不应访问网络')) as get:
             self.install_agent()
 
         get.assert_not_called()
@@ -103,7 +107,7 @@ class TestAtxAgentDownload(unittest.TestCase):
     def test_invalid_cache_is_replaced_only_after_valid_download(self):
         self.cache.parent.mkdir(parents=True)
         self.cache.write_bytes(b'Forbidden')
-        with patch('requests.get', return_value=response(self.content)) as get:
+        with patch('deploy.downloads.download_get', return_value=response(self.content)) as get:
             self.install_agent()
 
         get.assert_called_once()
@@ -111,14 +115,14 @@ class TestAtxAgentDownload(unittest.TestCase):
         self.assert_agent_pushed()
 
     def test_html_response_is_rejected_before_fallback_and_push(self):
-        with patch('requests.get', side_effect=[response(b'<html>error</html>'), response(self.content)]):
+        with patch('deploy.downloads.download_get', side_effect=[response(b'<html>error</html>'), response(self.content)]):
             self.install_agent()
 
         self.assertEqual(self.cache.read_bytes(), self.content)
         self.assert_agent_pushed()
 
     def test_truncated_response_is_not_cached_or_pushed(self):
-        with patch('requests.get', side_effect=[response(self.content[:20]), response(b'Forbidden', 403)]) as get:
+        with patch('deploy.downloads.download_get', side_effect=[response(self.content[:20]), response(b'Forbidden', 403)]) as get:
             with self.assertRaises(requests.HTTPError):
                 self.install_agent()
 
@@ -130,7 +134,7 @@ class TestAtxAgentDownload(unittest.TestCase):
     def test_stream_failure_closes_response_and_cleans_partial_file(self):
         failed = response(self.content)
         failed.iter_content.side_effect = requests.ConnectionError('传输中断')
-        with patch('requests.get', side_effect=[failed, response(b'Forbidden', 403)]):
+        with patch('deploy.downloads.download_get', side_effect=[failed, response(b'Forbidden', 403)]):
             with self.assertRaises(requests.HTTPError):
                 self.install_agent()
 
@@ -139,7 +143,7 @@ class TestAtxAgentDownload(unittest.TestCase):
         self.init._device.sync.push.assert_not_called()
 
     def test_download_without_content_length_is_supported(self):
-        with patch('requests.get', return_value=response(self.content, content_length=False)):
+        with patch('deploy.downloads.download_get', return_value=response(self.content, content_length=False)):
             self.install_agent()
 
         self.assert_agent_pushed()
@@ -158,6 +162,29 @@ class TestAtxAgentDownload(unittest.TestCase):
         self.init.abis = ['arm64-v8a', 'armeabi-v7a']
         self.assertTrue(self.init.atx_agent_url.endswith('_linux_arm64.tar.gz'))
         self.assertEqual(self.init.minicap_urls, [])
+
+    def test_bootstrap_patch_is_idempotent_and_uses_same_download_headers(self):
+        from deploy.download_patch import patch_u2_downloads
+
+        original = Path(u2.init.__file__).read_text(encoding='utf-8')
+        patched = patch_u2_downloads(original)
+        self.assertEqual(patch_u2_downloads(patched), patched)
+        tree = ast.parse(patched)
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name in ('cache_download', 'mirror_download')]
+        namespace = {'logger': Mock(), 'logging': logging, 'os': os,
+                     'gen_cachepath': lambda _url: str(self.cache),
+                     'GITHUB_BASEURL': 'https://github.com/openatx',
+                     '__atx_agent_version__': u2.version.__atx_agent_version__}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), '<下载补丁夹具>', 'exec'), namespace)
+        with patch('deploy.downloads.download_get',
+                   side_effect=[response(b'Forbidden', 403), response(self.content)]) as download:
+            self.assertEqual(namespace['mirror_download'](self.url), str(self.cache))
+        self.assertEqual(download.call_count, 2)
+        for call in download.call_args_list:
+            self.assertEqual(call.kwargs['headers']['X-AzurPilot-ID'], 'a' * 32)
+            self.assertEqual(call.kwargs['headers']['Cloudflare-Workers-Version-Key'], 'a' * 32)
+            self.assertNotIn('Origin', call.kwargs['headers'])
 
 
 if __name__ == '__main__':

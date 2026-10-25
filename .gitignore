@@ -88,6 +88,9 @@ frontend/*.tsbuildinfo
 
 # Python
 /.uv-cache/
+
+# 独立自建云服务的运行数据，不随客户端源码分发
+/server-data/
 __pycache__/
 *.py[cod]
 *$py.class

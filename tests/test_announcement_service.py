@@ -1,11 +1,17 @@
 """公告服务与 API 分发回归测试。"""
-import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from module.api.announcement_service import AnnouncementService
-from module.api.protocol import AnnouncementParams
 from module.api.router import Router
+from deploy.cloud_api import StaticResult
+
+
+def cloud_result(data):
+    notice = None if data is None else {'id': data['announcementId'], 'title': data['title'],
+                                      'content': data['content'], 'url': data['url'] or None}
+    return StaticResult(False, {'schema_version': 2, 'updated_at': '2026-10-26T10:00:00Z',
+                                'announcement': notice}, 'notice-1')
 
 
 class AnnouncementServiceTest(unittest.TestCase):
@@ -19,7 +25,7 @@ class AnnouncementServiceTest(unittest.TestCase):
             'content': '测试公告内容',
             'url': 'https://example.com',
         }
-        with patch('module.base.api_client.ApiClient.get_announcement', return_value=mock_data) as mock_get:
+        with patch('module.base.api_client.ApiClient.fetch_announcement', return_value=cloud_result(mock_data)) as mock_get:
             res1 = self.service.get(force=False)
             self.assertEqual(res1, mock_data)
             self.assertEqual(mock_get.call_count, 1)
@@ -40,11 +46,11 @@ class AnnouncementServiceTest(unittest.TestCase):
             'content': '旧内容',
             'url': '',
         }
-        with patch('module.base.api_client.ApiClient.get_announcement', return_value=initial_data):
+        with patch('module.base.api_client.ApiClient.fetch_announcement', return_value=cloud_result(initial_data)):
             self.service.get(force=False)
 
         # 远端返回 None（例如 304 未修改）
-        with patch('module.base.api_client.ApiClient.get_announcement', return_value=None):
+        with patch('module.base.api_client.ApiClient.fetch_announcement', return_value=StaticResult(True, None, 'notice-1')):
             result = self.service.get(force=True)
             self.assertEqual(result, initial_data)
 
@@ -56,9 +62,26 @@ class AnnouncementServiceTest(unittest.TestCase):
             'content': '分发测试',
             'url': '',
         }
-        with patch('module.base.api_client.ApiClient.get_announcement', return_value=mock_data):
+        with patch('module.base.api_client.ApiClient.fetch_announcement', return_value=cloud_result(mock_data)):
             res = router.dispatch('announcement.get', {'force': True})
             self.assertEqual(res, mock_data)
+
+    def test_withdrawal_clears_previous_notice_and_caches_empty_result(self):
+        data = {'announcementId': 'old', 'title': '旧公告', 'content': '旧内容', 'url': ''}
+        with patch('module.base.api_client.ApiClient.fetch_announcement',
+                   side_effect=[cloud_result(data), cloud_result(None)]) as fetch:
+            self.assertEqual(self.service.get(), data)
+            self.assertIsNone(self.service.get(force=True))
+            self.assertIsNone(self.service.get())
+            self.assertEqual(fetch.call_count, 2)
+            self.assertEqual(fetch.call_args.kwargs['etag'], 'notice-1')
+
+    def test_network_failure_keeps_last_valid_notice(self):
+        data = {'announcementId': 'old', 'title': '旧公告', 'content': '旧内容', 'url': ''}
+        with patch('module.base.api_client.ApiClient.fetch_announcement',
+                   side_effect=[cloud_result(data), TimeoutError('网络暂不可用')]):
+            self.assertEqual(self.service.get(), data)
+            self.assertEqual(self.service.get(force=True), data)
 
 
 if __name__ == '__main__':

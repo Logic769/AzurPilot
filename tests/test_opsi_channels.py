@@ -10,7 +10,7 @@ class ChannelTests(unittest.TestCase):
         submitter = object.__new__(Cl1DataSubmitter)
         data = {'battle_count': 987}
         with patch.object(ApiClient, 'submit_cl1_data') as send:
-            self.assertTrue(submitter.submit_data(data))
+            self.assertIs(submitter.submit_data(data), send.return_value)
             send.assert_called_once_with(data, timeout=10)
 
     def test_exception_locals_are_not_logged(self):

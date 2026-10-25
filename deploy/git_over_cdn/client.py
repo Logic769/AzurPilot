@@ -7,11 +7,13 @@ import subprocess
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Callable, Generic, TypeVar
 
-import requests
 from requests.adapters import HTTPAdapter
+
+from deploy.device_id import request_device_id
+from deploy.http import BrowserSession
+from deploy.http_headers import browser_headers
 
 T = TypeVar("T")
 
@@ -22,17 +24,12 @@ CLOUDFLARE_VERSION_KEY_HEADER = 'Cloudflare-Workers-Version-Key'
 
 
 def _read_device_id() -> str:
-    """从 log/device_id.json 读取当前设备 ID，文件缺失或损坏时返回空字符串。
+    """读取或初始化非空身份，兼容旧调用入口。
 
     Returns:
         str: 设备 ID 字符串。
     """
-    try:
-        path = Path(__file__).resolve().parents[2] / 'log' / 'device_id.json'
-        device_id = json.loads(path.read_text(encoding='utf-8')).get('device_id', '')
-        return device_id if isinstance(device_id, str) else ''
-    except Exception:
-        return ''
+    return request_device_id()
 
 
 class cached_property(Generic[T]):
@@ -175,7 +172,7 @@ class GitOverCdnClient:
         Returns:
             requests.Session: 已配置的会话对象。
         """
-        session = requests.Session()
+        session = BrowserSession(legacy_device=True)
         session.trust_env = False
         device_id = _read_device_id()
         # X-Device-Id 供 CDN 统计设备；Cloudflare-Workers-Version-Key 供 Cloudflare
@@ -336,7 +333,7 @@ class GitOverCdnClient:
             url = self.urlpath(f'/{latest}/{current}.zip')
             self.logger.info(f'Fetch url: {url}')
             try:
-                resp = self.session.get(url, timeout=20)
+                resp = self.session.get(url, timeout=20, headers=browser_headers(binary=True, legacy_device=True))
             except Exception as e:
                 self.logger.error(f'Failed to download pack: {e}')
                 continue

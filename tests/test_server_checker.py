@@ -10,7 +10,7 @@ from module.exception import ScriptError
 from module.server_checker import ServerChecker
 from module.server_status import GatewayServer, ServerStatusQueryError
 
-API_BASE = "https://server-checker.nanoda.work/api/v1/servers"
+API_BASE = "https://server-checker.nanoda.work/api/v2/get/server"
 
 
 def make_response(status_code=200, payload=None, text=""):
@@ -22,10 +22,12 @@ def make_response(status_code=200, payload=None, text=""):
     return response
 
 
-def make_server_payload(server_id, name, status):
+def make_server_payload(server_id, name, status, region='cn'):
     """创建单服务器端点的成功响应。"""
     return {
-        "region": "test",
+        "schema_version": 2,
+        "updated_at": "2026-10-26T10:00:00Z",
+        "region": region,
         "region_name": "测试区服",
         "server": {
             "id": server_id,
@@ -45,7 +47,7 @@ class ServerCheckerTestCase(unittest.TestCase):
             payload=make_server_payload(1, "测试服务器", "normal")
         )
         self.session_patch = patch(
-            "module.server_checker.requests.Session", return_value=self.session
+            "module.server_checker.BrowserSession", return_value=self.session
         )
         self.session_patch.start()
         self.addCleanup(self.session_patch.stop)
@@ -61,7 +63,10 @@ class ServerCheckerTestCase(unittest.TestCase):
         self.session.get.assert_called_once()
         args, kwargs = self.session.get.call_args
         url = kwargs.get("url", args[0] if args else None)
-        self.assertEqual(url, f"{API_BASE}/{composite_id}")
+        self.assertEqual(url, API_BASE)
+        region, identifier = composite_id.rsplit('_', 1)
+        self.assertEqual(kwargs.get('params'), {'region': region, 'server_id': int(identifier)})
+        self.assertIs(kwargs.get('allow_redirects'), False)
         self.assertEqual(kwargs.get("timeout"), 15)
 
 
@@ -83,7 +88,7 @@ class TestServerMapping(ServerCheckerTestCase):
             with self.subTest(config_key=config_key):
                 self.session.get.reset_mock()
                 self.session.get.return_value = make_response(
-                    payload=make_server_payload(server_id, name, "normal")
+                    payload=make_server_payload(server_id, name, "normal", region=composite_id.rsplit("_", 1)[0])
                 )
 
                 checker = self.build_checker(config_key)

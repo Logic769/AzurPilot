@@ -170,7 +170,7 @@ module/base/
 | `ssh.py` | 不是 SSH 连接库。`clear_ssh_host_key()` 先用 `ssh -G` 查询目标主机实际使用的 known_hosts 文件，再 `ssh-keygen -R` 只删该主机的指纹记录，供远程模拟器管理与远程访问场景避免主机指纹变更导致的交互卡死 |
 | `device_id.py` | Windows 用 WMIC 查主板/CPU/BIOS/磁盘序列号，Linux 用 machine-id，macOS 用硬件 UUID（已舍弃 MAC 地址），拼接后 SHA-256 取前 32 位。变更时把旧 ID 暂存内存供统计数据库热迁移；`log/device_id.json` 每 5 分钟由 daemon 线程覆写 |
 | `backup.py` | 每日备份：SQLite `backup()` 保存 `azurpilot.db` 的已提交 WAL，再锁定并备份安全数据库、注册信息、密钥材料、`deploy.yaml` 与用户配置 JSON（排除 `template*`）；外部安全密钥不自动导出。全部成功后原子发布目录，写入 `AzurPilot_Data_Backup/<日期>/`，按保留天数清理。`enable=False` 时直接返回，不动备份目录 |
-| `api_client.py` | 远程 API 客户端（CL1 遥测、公告拉取），遥测上报走 `async_executor` 异步化；`get_announcement` 同步。请求失败仅记日志，绝不阻断游戏流程 |
+| `api_client.py` | 远程 API 客户端（CL1 遥测、公告拉取），遥测上报走 `async_executor` 异步化；`fetch_announcement` 同步并保留 ETag、撤回及错误语义。CL1 返回 Future，收到有效回执后才确认成功；公告字段由门面适配为原 WebUI 形状 |
 | `debug_clip.py` | 设备端 `screenrecord` 录制调试录像（30fps 输出、真实时间戳），`clip_recording()` 上下文管理器由侵蚀 1 练级与短猫相接使用。单段逻辑录像上限 5 分钟：设备端单进程只能录 180 秒，更长部分由后台轮转线程按段续录，收尾时转码并按顺序拼接（拼接失败则分段保存），到达上限自动停止。所有失败路径只记日志、优雅降级为不录，绝不影响游戏逻辑 |
 
 ## 6. 工作流程
@@ -219,7 +219,7 @@ flowchart TD
 
 | 模块 | 关系 |
 | --- | --- |
-| `alas.py`（调度器） | 每个任务实例化业务模块（间接构造 `ModuleBase`）；调用 `release_resources()` 控制内存；调用 `backup()`、`ApiClient`、`clear_ssh_host_key()` |
+| `alas.py`（调度器） | 每个任务实例化业务模块（间接构造 `ModuleBase`）；调用 `release_resources()` 控制内存；调用 `backup()`、`clear_ssh_host_key()` |
 | 业务功能模块（campaign、os、shop 等） | 全部经 `InfoHandler → UI → ModuleBase` 继承链获得本层能力 |
 | `module/config/server.py` | `set_server()` 触发 `release_resources()` |
 | `module/statistics/*` | 通过 `async_executor`、`ApiClient`、`device_id` 上报数据 |
@@ -259,8 +259,8 @@ Device.screenshot() 产出 np.ndarray (720, 1280, 3) RGB
 上报链路（异步、不阻塞主流程）：
 
 ```
-统计/错误事件 → ApiClient.submit_*() → async_executor.submit()
-    → 后台 loop 线程串行执行 HTTP POST（失败仅记日志）
+CL1 月度原始快照 → ApiClient.submit_cl1_data() → async_executor.submit()
+    → 后台 HTTP POST → 校验完整回执 → 完成回调更新成功时间
 ```
 
 ## 9. 状态模型
@@ -299,7 +299,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | `ImageNotSupported` | `get_bbox` 遇到全黑图或未知通道数 | 上抛给调用方（生成按钮资源时中断该文件提取） |
 | `GameStuckError` / `GameTooManyClickError` | 检测/点击长期无进展（本层 `stuck_record_add` 与 `interval_timer` 提供输入） | 由设备层抛出，上层任务循环恢复，见设备层文档 |
-| `requests` 各类异常（`api_client.py`） | 网络失败、超时、非 2xx | 双域名依次重试，全部失败返回 `(False, 0, 原因)`，调用方忽略即可 |
+| `requests` 各类异常（`api_client.py`） | 网络失败、超时、非 2xx | CL1 通过 Future 将失败交给提交器，不更新成功时间；公告服务保留最近有效缓存 |
 | 录屏任何失败（`debug_clip.py`） | adb/ffmpeg/设备不支持 | 只记日志，优雅降级为「本段未保存」，绝不抛回游戏流程 |
 
 本层的总原则：**识别与计时不抛异常**（返回 bool 交给状态循环决策），**横切服务吞异常降级**（上报、备份、录屏失败不影响游戏任务），**配置解析警告不中断**（Filter 无效规则跳过）。真正的致命流程错误（卡死、游戏退出）由设备层与异常体系（`module/exception.py`）负责。
@@ -375,7 +375,7 @@ stateDiagram-v2
 
 ## 17. 已知限制
 
-- `ApiClient` 的主/备域名当前实际相同（都是 `alas-apiv2.nanoda.work`），故障转移形同虚设。
+- 云 v2 使用配置基址和严格响应校验；必须先部署对应云端协议，再发布客户端，见[自建云 API](../infra/cloud-api-v2.md)。部署身份源位于 `deploy/device_id.py`，运行期旧 ID 迁移仍在本层执行。
 - `ButtonGrid` 在未显式传 `name` 时用 `traceback` 从调用处源码文本提取赋值语句左侧作为名字——重构赋值行会静默改变按钮命名。
 - `module/base/retry.py` 与设备层 `retry_backend` 是两套独立实现，参数语义不同（如 `on_exhausted` 只存在于后者），容易混淆。
 - `device_id.json` 每 5 分钟覆写一次，主要价值是让外部能看到当前 ID；指纹含主机名（`platform.node()`），对极端克隆环境可能不唯一。
