@@ -116,7 +116,8 @@ class OpsiPreventActionPointOverflow(OpsiScheduling):
 
         Args:
             current_ap (int | None): 当前真实行动力。为 None 时现场 OCR 获取。
-            enable (bool): 是否同时启用防止行动力溢出任务。默认 True。
+            enable (bool | None): 是否同时启用防止行动力溢出任务。
+                True 启用、False 关闭、None 保留用户当前设置。默认 True。
         """
         if current_ap is None:
             current_ap = self._get_current_action_point_for_overflow()
@@ -137,7 +138,8 @@ class OpsiPreventActionPointOverflow(OpsiScheduling):
             f'{delay_minutes:.0f} 分钟后运行'
         )
         with self.config.multi_set():
-            self._set_prevent_action_point_overflow_enabled(enable)
+            if enable is not None:
+                self._set_prevent_action_point_overflow_enabled(enable)
             self.config.task_delay(
                 minute=delay_minutes,
                 task=self.TASK_NAME_PREVENT_AP_OVERFLOW,
